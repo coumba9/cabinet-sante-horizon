@@ -1,0 +1,20 @@
+[functions.create-account]
+verify_jwt = false
+
+[functions.manage-doctor]
+verify_jwt = false
+
+[functions.identifier-login]
+verify_jwt = false
+
+[functions.paytech-payment]
+verify_jwt = false
+
+[functions.seed-demo]
+verify_jwt = false
+
+[functions.bootstrap-admin]
+verify_jwt = false
+
+[functions.send-appointment-sms-reminders]
+verify_jwt = false
