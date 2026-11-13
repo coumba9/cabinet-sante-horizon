@@ -4,7 +4,7 @@ import { supabase } from './supabase';
 const stableSpecId = (name: string) => name === 'Médecine générale' ? 1 : name === 'Cardiologie' ? 2 : name === 'Pédiatrie' ? 3 : 100 + name.toLowerCase().split('').reduce((n, c) => (n * 31 + c.charCodeAt(0)) % 100000, 0);
 const requireClient = () => { if (!supabase) throw new Error('Supabase n’est pas configuré.'); return supabase; };
 export type SpecialtyRecord = { id: number; databaseId: string; name: string; description: string; color: string; icon: string };
-export type ProfileRecord = { id: string; nom: string; prenom: string; telephone: string; status: 'actif'|'bloqué'; role: 'patient'|'medecin'|'administrateur'; specialtyId?: number };
+export type ProfileRecord = { id: string; nom: string; prenom: string; telephone: string; telephone_verified_at?: string | null; sms_consent_at?: string | null; status: 'actif'|'bloqué'; role: 'patient'|'medecin'|'administrateur'; specialtyId?: number };
 export type AppointmentRecord = { id: string; patientId: string; patient: string; phone: string; blood: string; history: string; specialty: number; date: string; time: string; status: 'demandé'|'confirmé'|'reprogrammé'|'annulé'|'terminé'; smsRemindersEnabled: boolean };
 export type AvailabilityRecord = { id: string; start: string; end: string; duration: number; status: 'actif'|'bloqué'|'libéré' };
 export type MessageRecord = { id: string; senderId: string; recipientId: string; content: string; date: string; mine: boolean; sender: string; recipient: string };
@@ -14,7 +14,7 @@ export async function loadCurrentProfile(): Promise<ProfileRecord> {
   const { data: { user } } = await client.auth.getUser();
   if (!user) throw new Error('Session expirée. Identifiez-vous de nouveau.');
   const [{ data: profile, error }, { data: roleRow, error: roleError }, { data: doctor }] = await Promise.all([
-    client.from('profiles').select('id,nom,prenom,telephone,status').eq('id', user.id).single(),
+    client.from('profiles').select('id,nom,prenom,telephone,telephone_verified_at,sms_consent_at,status').eq('id', user.id).single(),
     client.from('user_roles').select('role').eq('user_id', user.id).single(),
     client.from('doctors').select('specialite_id').eq('id', user.id).maybeSingle(),
   ]);
@@ -39,7 +39,7 @@ export async function loadAppointments(role: ProfileRecord['role']): Promise<App
     const profile = Array.isArray(patient?.profile) ? patient.profile[0] : patient?.profile;
     const spec = Array.isArray(row.specialty) ? row.specialty[0] : row.specialty;
     const date = new Date(row.date);
-    return { id: row.id, patientId: row.patient_id, patient: role === 'patient' ? `${profile?.prenom ?? ''} ${profile?.nom ?? ''}`.trim() : `${profile?.prenom ?? ''} ${profile?.nom ?? ''}`.trim() || 'Patient', phone: profile?.telephone ?? '', blood: patient?.groupe_sanguin ?? 'Non renseigné', history: patient?.antecedents ?? '', specialty: stableSpecId(spec?.nom ?? ''), date: format(date, 'yyyy-MM-dd'), time: format(date, 'HH:mm'), status: row.statut, smsRemindersEnabled: row.sms_reminders_enabled === true };
+    return { id: row.id, patientId: row.patient_id, patient: role === 'patient' ? `${profile?.prenom ?? ''} ${profile?.nom ?? ''}`.trim() : `${profile?.prenom ?? ''} ${profile?.nom ?? ''}`.trim() || 'Patient', phone: profile?.telephone ?? '', blood: patient?.groupe_sanguin ?? 'Non renseigné', history: patient?.antecedents ?? '', specialty: stableSpecId(spec?.nom ?? ''), date: date.toISOString().slice(0, 10), time: date.toISOString().slice(11, 16), status: row.statut, smsRemindersEnabled: row.sms_reminders_enabled === true };
   });
 }
 
@@ -49,22 +49,22 @@ export async function loadAvailableSlots(specialtyId: number, date: string): Pro
   if (!specialty) return [];
   const { data, error } = await client.rpc('available_slots', { p_specialty_id: specialty.databaseId, p_day: date });
   if (error) throw new Error('Impossible de charger les créneaux disponibles.');
-  return (data ?? []).map((slot: any) => ({ time: format(new Date(slot.starts_at), 'HH:mm'), remaining: Number(slot.remaining) })).filter((s: { remaining: number }) => s.remaining > 0);
+  return (data ?? []).map((slot: any) => ({ time: new Date(slot.starts_at).toISOString().slice(11, 16), remaining: Number(slot.remaining) })).filter((s: { remaining: number }) => s.remaining > 0);
 }
 
 export async function changeAppointment(id: string, newDateTime: string | null) {
-  const { error } = await requireClient().rpc('change_appointment', { p_appointment_id: id, p_new_starts_at: newDateTime ? new Date(newDateTime).toISOString() : null });
-  if (error) throw new Error(error.message.includes('change_window') ? 'La modification est possible jusqu’à 24 h avant le rendez-vous.' : error.message.includes('slot_full') ? 'Ce créneau vient d’être réservé. Choisissez-en un autre.' : 'Impossible de modifier ce rendez-vous.');
+  const { error } = await requireClient().rpc('change_appointment', { p_appointment_id: id, p_new_starts_at: newDateTime ? new Date(newDateTime.includes('+') || /Z$/.test(newDateTime) ? newDateTime : `${newDateTime}+00:00`).toISOString() : null });
+  if (error) throw new Error(error.message.includes('change_window') ? 'La modification est possible jusqu’à 24 h avant le rendez-vous.' : error.message.includes('slot_full') ? 'Ce créneau vient d’être réservé, choisissez-en un autre.' : error.message.includes('slot_past') ? 'La nouvelle date est déjà passée. Choisissez un autre créneau.' : 'Impossible de modifier ce rendez-vous. Actualisez la page puis réessayez.');
 }
 
 export async function doctorChangeAppointment(id: string, newDateTime: string | null) {
-  const { error } = await requireClient().rpc('doctor_change_appointment', { p_appointment_id: id, p_new_starts_at: newDateTime ? new Date(newDateTime).toISOString() : null });
-  if (error) throw new Error(error.message.includes('slot_full') ? 'Ce créneau vient d’être réservé. Choisissez-en un autre.' : 'Impossible de modifier ce rendez-vous. Actualisez la page.');
+  const { error } = await requireClient().rpc('doctor_change_appointment', { p_appointment_id: id, p_new_starts_at: newDateTime ? new Date(newDateTime.includes('+') || /Z$/.test(newDateTime) ? newDateTime : `${newDateTime}+00:00`).toISOString() : null });
+  if (error) throw new Error(error.message.includes('slot_full') ? 'Ce créneau vient d’être réservé, choisissez-en un autre.' : error.message.includes('slot_past') ? 'La nouvelle date est déjà passée. Choisissez un autre créneau.' : 'Impossible de modifier ce rendez-vous. Actualisez la page puis réessayez.');
 }
 
 export async function setAppointmentSmsReminders(id: string, enabled: boolean) {
   const { error } = await requireClient().rpc('set_appointment_sms_reminders', { p_appointment_id: id, p_enabled: enabled });
-  if (error) throw new Error('Impossible de modifier les rappels SMS de ce rendez-vous.');
+  if (error) throw new Error(error.message.includes('phone_not_verified') ? 'Vérifiez votre numéro de téléphone avant d’activer les rappels SMS.' : 'Impossible de modifier les rappels SMS de ce rendez-vous.');
 }
 
 export async function confirmAppointment(id: string) {

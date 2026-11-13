@@ -26,7 +26,7 @@ export async function requestAppointment(specialtyId: number, startsAt: string, 
     p_starts_at: startsAt,
     p_sms_reminders_enabled: smsRemindersEnabled,
   });
-  if (error) throw new Error(error.message.includes('slot_full') ? 'Ce créneau est complet. Rechargez les disponibilités.' : error.message);
+  if (error) throw new Error(error.message.includes('slot_full') ? 'Ce créneau vient d’être réservé, choisissez-en un autre.' : error.message.includes('slot_past') ? 'Ce créneau est déjà passé. Choisissez une autre date ou une autre heure.' : 'Impossible de réserver ce créneau. Réessayez.');
   return data as string;
 }
 
@@ -34,9 +34,10 @@ export async function requestAppointmentByName(specialtyName: string, date: stri
   if (!supabase) throw new Error('Le service de réservation n’est pas configuré.');
   const { data: specialty, error: specialtyError } = await supabase.from('specialties').select('id').eq('nom', specialtyName).single();
   if (specialtyError || !specialty) throw new Error('Cette spécialité n’est pas disponible. Rechargez la page.');
-  const startsAt = new Date(`${date}T${time}:00`).toISOString();
+  // Le cabinet utilise l'heure de Dakar (UTC+0).
+  const startsAt = new Date(`${date}T${time}:00+00:00`).toISOString();
   const { data, error } = await supabase.rpc('request_appointment', { p_specialty_id: specialty.id, p_starts_at: startsAt, p_sms_reminders_enabled: smsRemindersEnabled });
-  if (error) throw new Error(error.message.includes('slot_full') ? 'Ce créneau est complet. Rechargez les disponibilités.' : 'Impossible de réserver ce créneau. Réessayez.');
+  if (error) throw new Error(error.message.includes('slot_full') ? 'Ce créneau vient d’être réservé, choisissez-en un autre.' : error.message.includes('slot_past') ? 'Ce créneau est déjà passé. Choisissez une autre date ou une autre heure.' : error.message.includes('phone_not_verified') ? 'Vérifiez votre numéro de téléphone avant de demander des rappels SMS.' : 'Impossible de réserver ce créneau. Actualisez la page puis réessayez.');
   return data as string;
 }
 
@@ -56,4 +57,18 @@ export async function createPatientAccount(input: Record<string, string>) {
   });
   if (error || data?.error) throw new Error(data?.message || error?.message || 'La création du compte a échoué.');
   return data as { id: string; role: string };
+}
+
+export async function startPhoneVerification(phone: string) {
+  if (!supabase) throw new Error('La vérification du téléphone nécessite la connexion au service.');
+  const { data, error } = await supabase.functions.invoke('verify-phone', { body: { action: 'start', phone } });
+  if (error || data?.error) throw new Error(data?.message || error?.message || 'Impossible d’envoyer le code SMS.');
+  return data as { challenge_id: string; expires_in: number };
+}
+
+export async function confirmPhoneVerification(phone: string, challengeId: string, code: string) {
+  if (!supabase) throw new Error('La vérification du téléphone nécessite la connexion au service.');
+  const { data, error } = await supabase.functions.invoke('verify-phone', { body: { action: 'verify', phone, challenge_id: challengeId, code } });
+  if (error || data?.error) throw new Error(data?.message || error?.message || 'Le code de vérification est incorrect.');
+  return data as { verified: true; phone: string; verified_at: string };
 }

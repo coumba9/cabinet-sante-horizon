@@ -13,13 +13,13 @@ const normalizeSenegalNumber = (raw: string) => {
   return `+${digits}`;
 };
 
-const reminderText = (kind: string, date: Date) => {
+const reminderText = (kind: string, date: Date, specialty: string) => {
   const when = new Intl.DateTimeFormat('fr-FR', {
-    timeZone: 'Africa/Dakar', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    timeZone: 'Africa/Dakar', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
   }).format(date);
-  if (kind === 'confirmation') return `Cabinet Santé Horizon : votre rendez-vous est confirmé le ${when}. Retrouvez ses détails dans votre espace patient.`;
-  const lead = kind === '24h' ? 'Rappel : votre rendez-vous est prévu demain' : 'Rappel : votre rendez-vous est prévu dans 5 heures';
-  return `Cabinet Santé Horizon : ${lead} (${when}). Retrouvez ses détails dans votre espace patient.`;
+  const lead = kind === 'confirmation' ? 'confirme' : kind === 'reprogrammed' ? 'reprogramme' : kind === '24h' ? 'rappel : demain' : 'rappel : dans 5 heures';
+  const plainSpecialty = specialty.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  return `Cabinet Sante Horizon: rendez-vous ${lead} le ${when}, specialite ${plainSpecialty}. Pour annuler, connectez-vous a votre espace patient ou contactez le cabinet.`;
 };
 
 Deno.serve(async (req) => {
@@ -42,7 +42,7 @@ Deno.serve(async (req) => {
     .eq('status', 'sending').lt('updated_at', new Date(now.getTime() - 5 * 60_000).toISOString());
 
   const { data: jobs, error } = await admin.from('appointment_sms_jobs')
-    .select('id,kind,attempts,appointment:appointments!inner(id,date,statut,sms_reminders_enabled,patient:patients!appointments_patient_id_fkey(profile:profiles!patients_id_fkey(telephone)))')
+    .select('id,kind,attempts,appointment:appointments!inner(id,date,statut,sms_reminders_enabled,patient:patients!appointments_patient_id_fkey(profile:profiles!patients_id_fkey(telephone,telephone_verified_at,sms_consent_at)),specialty:specialties!appointments_specialite_id_fkey(nom))')
     .eq('status', 'pending').lte('scheduled_at', now.toISOString()).order('scheduled_at').limit(50);
   if (error) return reply({ error: 'queue_read_failed' }, 500);
 
@@ -55,15 +55,32 @@ Deno.serve(async (req) => {
     const appointment = Array.isArray(job.appointment) ? job.appointment[0] : job.appointment;
     const patient = Array.isArray(appointment?.patient) ? appointment.patient[0] : appointment?.patient;
     const profile = Array.isArray(patient?.profile) ? patient.profile[0] : patient?.profile;
-    const validStatus = job.kind === 'confirmation'
-      ? appointment?.statut === 'confirmé'
+    const validStatus = job.kind === 'confirmation' ? appointment?.statut === 'confirmé'
+      : job.kind === 'reprogrammed' ? appointment?.statut === 'reprogrammé'
       : ['confirmé', 'reprogrammé'].includes(appointment?.statut ?? '');
-    if (!appointment?.sms_reminders_enabled || !validStatus || !profile?.telephone) {
+    const hasConsent = Boolean(profile?.sms_consent_at || appointment?.sms_reminders_enabled);
+    const isReminder = ['24h', '5h', 'reprogrammed'].includes(job.kind);
+    if ((isReminder && !appointment?.sms_reminders_enabled) || (job.kind === 'confirmation' && !hasConsent) || !validStatus || !profile?.telephone || !profile?.telephone_verified_at) {
       await admin.from('appointment_sms_jobs').update({ status: 'cancelled', updated_at: new Date().toISOString() }).eq('id', job.id);
       continue;
     }
 
     try {
+      // Revalider immédiatement avant l'appel externe : un report/annulation
+      // intervenu après la lecture de la file ne doit pas envoyer l'ancien rappel.
+      const { data: currentJob } = await admin.from('appointment_sms_jobs').select('status,kind,scheduled_at').eq('id', job.id).maybeSingle();
+      const { data: currentAppt } = await admin.from('appointments').select('date,statut,sms_reminders_enabled,patient:patients!appointments_patient_id_fkey(profile:profiles!patients_id_fkey(telephone,telephone_verified_at,sms_consent_at)),specialty:specialties!appointments_specialite_id_fkey(nom)').eq('id', appointment.id).maybeSingle();
+      const freshAppt = currentAppt as any;
+      const freshPatient = Array.isArray(freshAppt?.patient) ? freshAppt.patient[0] : freshAppt?.patient;
+      const freshProfile = Array.isArray(freshPatient?.profile) ? freshPatient.profile[0] : freshPatient?.profile;
+      const freshSpecialty = Array.isArray(freshAppt?.specialty) ? freshAppt.specialty[0] : freshAppt?.specialty;
+      const unchangedSchedule = freshAppt && new Date(freshAppt.date).getTime() === new Date(appointment.date).getTime();
+      const freshHasConsent = Boolean(freshProfile?.sms_consent_at || freshAppt?.sms_reminders_enabled);
+      const stillValid = currentJob?.status === 'sending' && unchangedSchedule && freshProfile?.telephone_verified_at && (job.kind === 'confirmation' ? freshAppt.statut === 'confirmé' && freshHasConsent : job.kind === 'reprogrammed' ? freshAppt.statut === 'reprogrammé' && freshAppt.sms_reminders_enabled : ['confirmé','reprogrammé'].includes(freshAppt.statut) && freshAppt.sms_reminders_enabled);
+      if (!stillValid) {
+        await admin.from('appointment_sms_jobs').update({ status: 'cancelled', updated_at: new Date().toISOString() }).eq('id', job.id).eq('status', 'sending');
+        continue;
+      }
       const deliveryResponse = await fetch('https://api.dexnotify.com/api/v1/sms/messages', {
         method: 'POST',
         headers: {
@@ -73,9 +90,9 @@ Deno.serve(async (req) => {
         },
         body: JSON.stringify({
           sender,
-          to: normalizeSenegalNumber(profile.telephone),
+          to: normalizeSenegalNumber(freshProfile.telephone),
           type: 'single',
-          content: reminderText(job.kind, new Date(appointment.date)),
+          content: reminderText(job.kind, new Date(freshAppt.date), freshSpecialty?.nom ?? 'consultation'),
         }),
       });
       const delivery = await deliveryResponse.json().catch(() => ({})) as Record<string, unknown>;

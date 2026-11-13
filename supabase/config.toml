@@ -1,6 +1,9 @@
 [functions.create-account]
 verify_jwt = false
 
+[functions.verify-phone]
+verify_jwt = false
+
 [functions.manage-doctor]
 verify_jwt = false
 
