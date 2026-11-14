@@ -99,7 +99,7 @@ export async function updateAvailability(id: string, status: 'actif'|'bloqué'|'
 
 export async function deleteAvailability(id: string) {
   const { error } = await requireClient().rpc('doctor_change_availability', { p_availability_id: id, p_status: null, p_delete: true });
-  if (error) throw new Error(error.message.includes('unauthorized') ? 'Action réservée au médecin concerné.' : 'Impossible de supprimer cette disponibilité.');
+  if (error) throw new Error(error.message.includes('unauthorized') ? 'Action réservée au médecin concerné.' : error.message.includes('availability_has_appointments') ? 'Suppression impossible : un rendez-vous est déjà réservé sur cette plage. Annulez ou reprogrammez d’abord les rendez-vous concernés.' : 'Impossible de supprimer cette disponibilité. Actualisez la page puis réessayez.');
 }
 
 export async function loadMessages(): Promise<MessageRecord[]> {
