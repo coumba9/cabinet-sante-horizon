@@ -3,7 +3,7 @@ import { supabase } from './supabase';
 
 const stableSpecId = (name: string) => name === 'Médecine générale' ? 1 : name === 'Cardiologie' ? 2 : name === 'Pédiatrie' ? 3 : 100 + name.toLowerCase().split('').reduce((n, c) => (n * 31 + c.charCodeAt(0)) % 100000, 0);
 const requireClient = () => { if (!supabase) throw new Error('Supabase n’est pas configuré.'); return supabase; };
-export type SpecialtyRecord = { id: number; databaseId: string; name: string; description: string; color: string; icon: string };
+export type SpecialtyRecord = { id: number; databaseId: string; name: string; displayName?: string; description: string; color: string; icon: string };
 export type ProfileRecord = { id: string; nom: string; prenom: string; telephone: string; telephone_verified_at?: string | null; sms_consent_at?: string | null; status: 'actif'|'bloqué'; role: 'patient'|'medecin'|'administrateur'; specialtyId?: number };
 export type AppointmentRecord = { id: string; patientId: string; patient: string; phone: string; blood: string; history: string; specialty: number; date: string; time: string; status: 'demandé'|'confirmé'|'reprogrammé'|'annulé'|'terminé'; smsRemindersEnabled: boolean };
 export type AvailabilityRecord = { id: string; start: string; end: string; duration: number; status: 'actif'|'bloqué'|'libéré' };
@@ -27,7 +27,8 @@ export async function loadCurrentProfile(): Promise<ProfileRecord> {
 export async function loadSpecialties(): Promise<SpecialtyRecord[]> {
   const { data, error } = await requireClient().from('specialties').select('id,nom,description').order('nom');
   if (error) throw new Error('Impossible de charger les spécialités.');
-  return (data ?? []).map(s => ({ id: stableSpecId(s.nom), databaseId: s.id, name: s.nom, description: s.description, color: s.nom === 'Cardiologie' ? 'rose' : s.nom === 'Pédiatrie' ? 'blue' : 'sage', icon: s.nom === 'Cardiologie' ? '♡' : s.nom === 'Pédiatrie' ? '⌂' : '✳' }));
+  const priority=(name:string)=>name==='Médecine générale'?0:name==='Pédiatrie'?1:name==='Dentiste'?2:name.startsWith('Gyn')?3:name==='Cardiologie'?4:5;
+  return (data ?? []).map(s => ({ id: stableSpecId(s.nom), databaseId: s.id, name: s.nom, displayName:s.nom==='Médecine générale'?'Médecin pour tout':undefined, description:s.nom==='Médecine générale'?'Pour tout problème. Si vous ne savez pas quoi choisir, commencez ici.':s.description, color: s.nom === 'Cardiologie'||s.nom.startsWith('Gyn') ? 'rose' : s.nom === 'Pédiatrie'||s.nom==='Dentiste' ? 'blue' : 'sage', icon: s.nom === 'Médecine générale' ? 'stethoscope' : s.nom === 'Cardiologie' ? '♡' : s.nom === 'Pédiatrie' ? '⌂' : s.nom === 'Dentiste' ? '✦' : s.nom.startsWith('Gyn') ? '✿' : '✳' })).sort((a,b)=>priority(a.name)-priority(b.name)||a.name.localeCompare(b.name,'fr'));
 }
 
 export async function loadAppointments(role: ProfileRecord['role']): Promise<AppointmentRecord[]> {
