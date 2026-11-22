@@ -6,7 +6,10 @@ const requireClient = () => { if (!supabase) throw new Error('Supabase n’est p
 export type SpecialtyRecord = { id: number; databaseId: string; name: string; displayName?: string; description: string; color: string; icon: string };
 export type ProfileRecord = { id: string; nom: string; prenom: string; telephone: string; telephone_verified_at?: string | null; sms_consent_at?: string | null; status: 'actif'|'bloqué'; role: 'patient'|'medecin'|'administrateur'; specialtyId?: number };
 export type AppointmentRecord = { id: string; patientId: string; patient: string; phone: string; blood: string; history: string; specialty: number; date: string; time: string; status: 'demandé'|'confirmé'|'reprogrammé'|'annulé'|'terminé'; smsRemindersEnabled: boolean };
-export type AvailabilityRecord = { id: string; start: string; end: string; duration: number; status: 'actif'|'bloqué'|'libéré' };
+export type AvailabilityRecord = { id: string; start: string; end: string; duration: number; status: 'actif'|'bloqué'|'libéré'; reason?: string | null };
+export type ImpedimentAlert = { id:string; date:string; time:string; specialtyId:string; specialty:string; appointments:number; capacity:number; excess:number; status:'à traiter'|'traitée'; createdAt:string };
+export type ImpedimentAppointment = { id:string; patient:string; phone:string; startsAt:string; specialty:string; bookedAt:string; excessOrder:number; isExcess:boolean };
+export type PatientNotificationRecord = { id:string; appointmentId:string|null; title:string; message:string; createdAt:string; read:boolean };
 export type MessageRecord = { id: string; senderId: string; recipientId: string; content: string; date: string; mine: boolean; sender: string; recipient: string };
 
 export async function loadCurrentProfile(): Promise<ProfileRecord> {
@@ -81,9 +84,9 @@ export async function completeAppointment(id: string) {
 export async function loadAvailabilities(): Promise<AvailabilityRecord[]> {
   const client = requireClient(); const { data: { user } } = await client.auth.getUser();
   if (!user) throw new Error('Session expirée.');
-  const { data, error } = await client.from('availabilities').select('id,date_debut,date_fin,duree_creneau_min,status').eq('medecin_id',user.id).order('date_debut');
+  const { data, error } = await client.from('availabilities').select('id,date_debut,date_fin,duree_creneau_min,status,motif_empechement').eq('medecin_id',user.id).order('date_debut');
   if (error) throw new Error('Impossible de charger vos disponibilités.');
-  return (data ?? []).map(a => ({ id: a.id, start: a.date_debut, end: a.date_fin, duration: a.duree_creneau_min, status: a.status }));
+  return (data ?? []).map(a => ({ id: a.id, start: a.date_debut, end: a.date_fin, duration: a.duree_creneau_min, status: a.status, reason:a.motif_empechement }));
 }
 
 export async function saveAvailability(input: { start: string; end: string; duration: number }) {
@@ -93,14 +96,60 @@ export async function saveAvailability(input: { start: string; end: string; dura
   if (error) throw new Error('Impossible d’enregistrer cette disponibilité. Vérifiez les horaires.');
 }
 
-export async function updateAvailability(id: string, status: 'actif'|'bloqué'|'libéré') {
-  const { error } = await requireClient().rpc('doctor_change_availability', { p_availability_id: id, p_status: status, p_delete: false });
-  if (error) throw new Error(error.message.includes('unauthorized') ? 'Action réservée au médecin concerné.' : 'Impossible de modifier cette disponibilité.');
+export async function doctorAvailabilityImpact(id:string) {
+  const {data,error}=await requireClient().rpc('doctor_availability_impediment_impact',{p_availability_id:id});
+  if(error)throw new Error('Impossible de calculer les rendez-vous qui pourraient être concernés.');
+  return Number(data||0);
 }
 
-export async function deleteAvailability(id: string) {
-  const { error } = await requireClient().rpc('doctor_change_availability', { p_availability_id: id, p_status: null, p_delete: true });
-  if (error) throw new Error(error.message.includes('unauthorized') ? 'Action réservée au médecin concerné.' : error.message.includes('availability_has_appointments') ? 'Suppression impossible : un rendez-vous est déjà réservé sur cette plage. Annulez ou reprogrammez d’abord les rendez-vous concernés.' : 'Impossible de supprimer cette disponibilité. Actualisez la page puis réessayez.');
+export async function updateAvailability(id: string, status: 'actif'|'bloqué'|'libéré',reason='') {
+  const { error } = await requireClient().rpc('doctor_change_availability', { p_availability_id: id, p_status: status, p_delete: false,p_reason:reason });
+  if (error) throw new Error(error.message.includes('impediment_reason_required') ? 'Indiquez le motif de l’empêchement (au moins 3 caractères).' : error.message.includes('unauthorized') ? 'Action réservée au médecin concerné.' : 'Impossible de modifier cette disponibilité.');
+}
+
+export async function deleteAvailability(id: string,reason='') {
+  const { error } = await requireClient().rpc('doctor_change_availability', { p_availability_id: id, p_status: null, p_delete: true,p_reason:reason });
+  if (error) throw new Error(error.message.includes('impediment_reason_required') ? 'Indiquez le motif du retrait (au moins 3 caractères).' : error.message.includes('unauthorized') ? 'Action réservée au médecin concerné.' : error.message.includes('availability_has_appointments') ? 'Retrait impossible : un rendez-vous est déjà réservé sur cette plage. Bloquez la disponibilité avec un motif pour déclencher le recalcul.' : 'Impossible de retirer cette disponibilité. Actualisez la page puis réessayez.');
+}
+
+export async function loadImpedimentAlerts():Promise<ImpedimentAlert[]> {
+ const {data,error}=await requireClient().from('alertes_empechement').select('id,date,heure,specialite_id,nb_rendez_vous,capacite,nb_excedent,statut,created_at,specialty:specialties!alertes_empechement_specialite_id_fkey(nom)').order('date',{ascending:false}).order('heure',{ascending:false});
+ if(error)throw new Error('Impossible de charger les alertes d’empêchement. Appliquez la migration Supabase.');
+ return (data??[]).map((r:any)=>{const s=Array.isArray(r.specialty)?r.specialty[0]:r.specialty;return{id:r.id,date:r.date,time:String(r.heure).slice(0,5),specialtyId:r.specialite_id,specialty:s?.nom??'Spécialité',appointments:Number(r.nb_rendez_vous),capacity:Number(r.capacite),excess:Number(r.nb_excedent),status:r.statut,createdAt:r.created_at}});
+}
+
+export async function loadImpedimentAppointments(alertId:string):Promise<ImpedimentAppointment[]> {
+ const {data,error}=await requireClient().rpc('admin_list_impediment_appointments',{p_alert_id:alertId});
+ if(error)throw new Error('Impossible de charger la liste des rendez-vous de ce créneau.');
+ return (data??[]).map((r:any)=>({id:r.appointment_id,patient:r.patient_name,phone:r.patient_phone,startsAt:r.starts_at,specialty:r.specialty,bookedAt:r.booked_at,excessOrder:Number(r.excess_order),isExcess:r.is_excess}));
+}
+
+export async function loadAdminImpedimentSlots(appointmentId:string,day:string):Promise<Array<{startsAt:string;time:string;remaining:number}>> {
+ const {data,error}=await requireClient().rpc('admin_impediment_available_slots',{p_appointment_id:appointmentId,p_day:day});
+ if(error)throw new Error('Impossible de charger les créneaux disponibles de cette spécialité.');
+ return (data??[]).map((r:any)=>({startsAt:r.starts_at,time:new Date(r.starts_at).toISOString().slice(11,16),remaining:Number(r.remaining)}));
+}
+
+export async function adminRescheduleImpedimentAppointment(id:string,startsAt:string) {
+ const {error}=await requireClient().rpc('admin_reschedule_impediment_appointment',{p_appointment_id:id,p_new_starts_at:startsAt});
+ if(error)throw new Error(error.message.includes('slot_full')?'Ce créneau vient d’être réservé, choisissez-en un autre.':error.message.includes('slot_past')?'La nouvelle date est déjà passée.':error.message.includes('impediment_alert_resolved')?'La capacité a été recalculée et cette alerte est déjà traitée. Actualisez la liste.':error.message.includes('appointment_not_changeable')?'Ce rendez-vous a déjà été traité. Actualisez la liste.':'Impossible de reporter ce rendez-vous.');
+}
+
+export async function adminCancelImpedimentAppointment(id:string,reason:string) {
+ const {error}=await requireClient().rpc('admin_cancel_impediment_appointment',{p_appointment_id:id,p_reason:reason});
+ if(error)throw new Error(error.message.includes('cancellation_reason_required')?'Le motif d’annulation est obligatoire.':error.message.includes('impediment_alert_resolved')?'La capacité a été recalculée et cette alerte est déjà traitée. Actualisez la liste.':error.message.includes('appointment_not_changeable')?'Ce rendez-vous a déjà été traité. Actualisez la liste.':'Impossible d’annuler ce rendez-vous.');
+}
+
+export async function loadPatientNotifications():Promise<PatientNotificationRecord[]> {
+ const {data,error}=await requireClient().from('patient_notifications').select('id,appointment_id,title,body,created_at,read_at').order('created_at',{ascending:false}).limit(50);
+ if(error)throw new Error('Impossible de charger les notifications.');
+ return (data??[]).map((r:any)=>({id:r.id,appointmentId:r.appointment_id,title:r.title,message:r.body,createdAt:r.created_at,read:Boolean(r.read_at)}));
+}
+
+export async function markPatientNotificationsRead(ids:string[]) {
+ if(!ids.length)return;
+ const {error}=await requireClient().from('patient_notifications').update({read_at:new Date().toISOString()}).in('id',ids).is('read_at',null);
+ if(error)throw new Error('Impossible de marquer les notifications comme lues.');
 }
 
 export async function loadMessages(): Promise<MessageRecord[]> {

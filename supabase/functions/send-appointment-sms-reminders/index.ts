@@ -42,7 +42,7 @@ Deno.serve(async (req) => {
     .eq('status', 'sending').lt('updated_at', new Date(now.getTime() - 5 * 60_000).toISOString());
 
   const { data: jobs, error } = await admin.from('appointment_sms_jobs')
-    .select('id,kind,attempts,appointment:appointments!inner(id,date,statut,sms_reminders_enabled,patient:patients!appointments_patient_id_fkey(profile:profiles!patients_id_fkey(telephone,telephone_verified_at,sms_consent_at)),specialty:specialties!appointments_specialite_id_fkey(nom))')
+    .select('id,kind,attempts,message_override,appointment:appointments!inner(id,date,statut,sms_reminders_enabled,patient:patients!appointments_patient_id_fkey(profile:profiles!patients_id_fkey(telephone,telephone_verified_at,sms_consent_at)),specialty:specialties!appointments_specialite_id_fkey(nom))')
     .eq('status', 'pending').lte('scheduled_at', now.toISOString()).order('scheduled_at').limit(50);
   if (error) return reply({ error: 'queue_read_failed' }, 500);
 
@@ -57,10 +57,12 @@ Deno.serve(async (req) => {
     const profile = Array.isArray(patient?.profile) ? patient.profile[0] : patient?.profile;
     const validStatus = job.kind === 'confirmation' ? appointment?.statut === 'confirmé'
       : job.kind === 'reprogrammed' ? appointment?.statut === 'reprogrammé'
+      : job.kind === 'impediment_cancelled' ? appointment?.statut === 'annulé'
       : ['confirmé', 'reprogrammé'].includes(appointment?.statut ?? '');
     const hasConsent = Boolean(profile?.sms_consent_at || appointment?.sms_reminders_enabled);
-    const isReminder = ['24h', '5h', 'reprogrammed'].includes(job.kind);
-    if ((isReminder && !appointment?.sms_reminders_enabled) || (job.kind === 'confirmation' && !hasConsent) || !validStatus || !profile?.telephone || !profile?.telephone_verified_at) {
+    const isReminder = ['24h', '5h'].includes(job.kind);
+    const isImpedimentNotice = ['reprogrammed','impediment_cancelled'].includes(job.kind);
+    if ((isReminder && !appointment?.sms_reminders_enabled) || ((job.kind === 'confirmation' || isImpedimentNotice) && !hasConsent) || !validStatus || !profile?.telephone || !profile?.telephone_verified_at) {
       await admin.from('appointment_sms_jobs').update({ status: 'cancelled', updated_at: new Date().toISOString() }).eq('id', job.id);
       continue;
     }
@@ -76,7 +78,7 @@ Deno.serve(async (req) => {
       const freshSpecialty = Array.isArray(freshAppt?.specialty) ? freshAppt.specialty[0] : freshAppt?.specialty;
       const unchangedSchedule = freshAppt && new Date(freshAppt.date).getTime() === new Date(appointment.date).getTime();
       const freshHasConsent = Boolean(freshProfile?.sms_consent_at || freshAppt?.sms_reminders_enabled);
-      const stillValid = currentJob?.status === 'sending' && unchangedSchedule && freshProfile?.telephone_verified_at && (job.kind === 'confirmation' ? freshAppt.statut === 'confirmé' && freshHasConsent : job.kind === 'reprogrammed' ? freshAppt.statut === 'reprogrammé' && freshAppt.sms_reminders_enabled : ['confirmé','reprogrammé'].includes(freshAppt.statut) && freshAppt.sms_reminders_enabled);
+      const stillValid = currentJob?.status === 'sending' && unchangedSchedule && freshProfile?.telephone_verified_at && (job.kind === 'confirmation' ? freshAppt.statut === 'confirmé' && freshHasConsent : job.kind === 'reprogrammed' ? freshAppt.statut === 'reprogrammé' && freshHasConsent : job.kind === 'impediment_cancelled' ? freshAppt.statut === 'annulé' && freshHasConsent : ['confirmé','reprogrammé'].includes(freshAppt.statut) && freshAppt.sms_reminders_enabled);
       if (!stillValid) {
         await admin.from('appointment_sms_jobs').update({ status: 'cancelled', updated_at: new Date().toISOString() }).eq('id', job.id).eq('status', 'sending');
         continue;
@@ -92,7 +94,7 @@ Deno.serve(async (req) => {
           sender,
           to: normalizeSenegalNumber(freshProfile.telephone),
           type: 'single',
-          content: reminderText(job.kind, new Date(freshAppt.date), freshSpecialty?.nom ?? 'consultation'),
+          content: String(job.message_override || reminderText(job.kind, new Date(freshAppt.date), freshSpecialty?.nom ?? 'consultation')),
         }),
       });
       const delivery = await deliveryResponse.json().catch(() => ({})) as Record<string, unknown>;
