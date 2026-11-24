@@ -10,6 +10,7 @@ export type AvailabilityRecord = { id: string; start: string; end: string; durat
 export type ImpedimentAlert = { id:string; date:string; time:string; specialtyId:string; specialty:string; appointments:number; capacity:number; excess:number; status:'à traiter'|'traitée'; createdAt:string };
 export type ImpedimentAppointment = { id:string; patient:string; phone:string; startsAt:string; specialty:string; bookedAt:string; excessOrder:number; isExcess:boolean };
 export type AdminPaymentAppointment = { id:string; patient:string; phone:string; startsAt:string; specialty:string; appointmentStatus:string; paymentStatus:string; paymentMethod:string|null; paymentReference:string|null; invoiceNumber:string|null; amount:number|null };
+export type PatientInvoiceRecord = { paymentId:string; appointmentId:string; invoiceNumber:string; paidAt:string; patientName:string; patientPhone:string; appointmentAt:string; specialty:string; paymentMethod:string; paymentReference:string|null; amount:number };
 export type PatientNotificationRecord = { id:string; appointmentId:string|null; title:string; message:string; createdAt:string; read:boolean };
 export type MessageRecord = { id: string; senderId: string; recipientId: string; content: string; date: string; mine: boolean; sender: string; recipient: string };
 
@@ -64,6 +65,43 @@ export async function loadAdminPaymentAppointments(): Promise<AdminPaymentAppoin
     invoiceNumber: row.invoice_number,
     amount: row.amount == null ? null : Number(row.amount),
   }));
+}
+
+export async function loadPatientInvoices(): Promise<PatientInvoiceRecord[]> {
+  const { data, error } = await requireClient().rpc('patient_paid_invoices');
+  if (error) throw new Error('Impossible de charger vos factures.');
+  return (data ?? []).map((row: any) => ({
+    paymentId: row.payment_id,
+    appointmentId: row.appointment_id,
+    invoiceNumber: row.invoice_number,
+    paidAt: row.paid_at,
+    patientName: row.patient_name,
+    patientPhone: row.patient_phone,
+    appointmentAt: row.appointment_at,
+    specialty: row.specialty,
+    paymentMethod: row.payment_method,
+    paymentReference: row.transaction_reference,
+    amount: Number(row.amount),
+  }));
+}
+
+export async function loadAdminPaidInvoice(appointmentId: string): Promise<PatientInvoiceRecord> {
+  const { data, error } = await requireClient().rpc('admin_paid_invoice_details', { p_appointment_id: appointmentId });
+  if (error || !data?.length) throw new Error('Facture payée introuvable ou accès non autorisé.');
+  const row = data[0];
+  return {
+    paymentId: row.payment_id,
+    appointmentId: row.appointment_id,
+    invoiceNumber: row.invoice_number,
+    paidAt: row.paid_at,
+    patientName: row.patient_name,
+    patientPhone: row.patient_phone,
+    appointmentAt: row.appointment_at,
+    specialty: row.specialty,
+    paymentMethod: row.payment_method,
+    paymentReference: row.transaction_reference,
+    amount: Number(row.amount),
+  };
 }
 
 export async function recordAdminOnsitePayment(appointmentId: string, amount: number, method: string, reference: string): Promise<string> {
