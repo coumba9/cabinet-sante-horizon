@@ -13,6 +13,9 @@ verify_jwt = false
 [functions.paytech-payment]
 verify_jwt = false
 
+[functions.paytech-ipn]
+verify_jwt = false
+
 [functions.seed-demo]
 verify_jwt = false
 

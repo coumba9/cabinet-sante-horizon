@@ -9,6 +9,7 @@ export type AppointmentRecord = { id: string; patientId: string; patient: string
 export type AvailabilityRecord = { id: string; start: string; end: string; duration: number; status: 'actif'|'bloqué'|'libéré'; reason?: string | null };
 export type ImpedimentAlert = { id:string; date:string; time:string; specialtyId:string; specialty:string; appointments:number; capacity:number; excess:number; status:'à traiter'|'traitée'; createdAt:string };
 export type ImpedimentAppointment = { id:string; patient:string; phone:string; startsAt:string; specialty:string; bookedAt:string; excessOrder:number; isExcess:boolean };
+export type AdminPaymentAppointment = { id:string; patient:string; phone:string; startsAt:string; specialty:string; appointmentStatus:string; paymentStatus:string; paymentMethod:string|null; paymentReference:string|null; invoiceNumber:string|null; amount:number|null };
 export type PatientNotificationRecord = { id:string; appointmentId:string|null; title:string; message:string; createdAt:string; read:boolean };
 export type MessageRecord = { id: string; senderId: string; recipientId: string; content: string; date: string; mine: boolean; sender: string; recipient: string };
 
@@ -45,6 +46,56 @@ export async function loadAppointments(role: ProfileRecord['role']): Promise<App
     const date = new Date(row.date);
     return { id: row.id, patientId: row.patient_id, patient: role === 'patient' ? `${profile?.prenom ?? ''} ${profile?.nom ?? ''}`.trim() : `${profile?.prenom ?? ''} ${profile?.nom ?? ''}`.trim() || 'Patient', phone: profile?.telephone ?? '', blood: patient?.groupe_sanguin ?? 'Non renseigné', history: patient?.antecedents ?? '', specialty: stableSpecId(spec?.nom ?? ''), date: date.toISOString().slice(0, 10), time: date.toISOString().slice(11, 16), status: row.statut, smsRemindersEnabled: row.sms_reminders_enabled === true };
   });
+}
+
+export async function loadAdminPaymentAppointments(): Promise<AdminPaymentAppointment[]> {
+  const { data, error } = await requireClient().rpc('admin_today_payment_appointments');
+  if (error) throw new Error('Impossible de charger les rendez-vous du jour pour le règlement.');
+  return (data ?? []).map((row: any) => ({
+    id: row.appointment_id,
+    patient: row.patient_name,
+    phone: row.patient_phone,
+    startsAt: row.starts_at,
+    specialty: row.specialty,
+    appointmentStatus: row.appointment_status,
+    paymentStatus: row.payment_status,
+    paymentMethod: row.payment_method,
+    paymentReference: row.payment_reference,
+    invoiceNumber: row.invoice_number,
+    amount: row.amount == null ? null : Number(row.amount),
+  }));
+}
+
+export async function recordAdminOnsitePayment(appointmentId: string, amount: number, method: string, reference: string): Promise<string> {
+  const { data, error } = await requireClient().rpc('admin_record_onsite_payment', {
+    p_appointment_id: appointmentId,
+    p_amount: amount,
+    p_method: method,
+    p_reference: reference || null,
+  });
+  if (error) {
+    const message = error.message;
+    if (message.includes('payment_reference_required')) throw new Error('Saisissez la référence de transaction pour ce paiement mobile.');
+    if (message.includes('payment_reference_already_used')) throw new Error('Cette référence de transaction a déjà été enregistrée.');
+    if (message.includes('paytech_payment_pending')) throw new Error('Un paiement PayTech est déjà en cours. Reprenez-le ou attendez son résultat.');
+    if (message.includes('appointment_already_paid')) throw new Error('Ce rendez-vous est déjà réglé.');
+    if (message.includes('appointment_not_today')) throw new Error('Le règlement ne peut être enregistré que pour un rendez-vous du jour.');
+    if (message.includes('invalid_payment_amount')) throw new Error('Saisissez un montant supérieur à zéro.');
+    throw new Error('Impossible d’enregistrer le règlement. Actualisez la page puis réessayez.');
+  }
+  return String(data);
+}
+
+export async function startPaytechPayment(appointmentId: string, amount: number, method: string): Promise<string> {
+  const { data, error } = await requireClient().functions.invoke('paytech-payment', { body: { appointment_id: appointmentId, amount, method } });
+  if (error || data?.error) {
+    if (data?.error === 'appointment_already_paid') throw new Error(data.message || 'Ce rendez-vous est déjà réglé.');
+    if (data?.error === 'appointment_not_today') throw new Error(data.message || 'Le paiement PayTech est réservé aux rendez-vous du jour.');
+    if (data?.error === 'payment_already_processing') throw new Error(data.message || 'Un paiement est déjà en cours pour ce rendez-vous.');
+    throw new Error(data?.message || error?.message || 'Impossible de préparer le paiement PayTech.');
+  }
+  if (typeof data?.redirect_url !== 'string' || !data.redirect_url.startsWith('https://paytech.sn/')) throw new Error('PayTech n’a pas renvoyé de lien de paiement valide.');
+  return data.redirect_url;
 }
 
 export async function loadAvailableSlots(specialtyId: number, date: string): Promise<Array<{ time: string; remaining: number }>> {
