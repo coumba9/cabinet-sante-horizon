@@ -256,7 +256,7 @@ begin
     values(auth.uid(),'report par empêchement','rendez_vous',v_appt.id::text,jsonb_build_object('motif','empêchement médecin','specialite_id',v_appt.specialite_id,'ancien_creneau',v_appt.date,'nouveau_creneau',p_new_starts_at));
   if v_consent and v_verified then
     insert into public.appointment_sms_jobs(appointment_id,kind,scheduled_at,status,message_override)
-      values(v_appt.id,'reprogrammed',now(),'pending','Cabinet Sante Horizon: votre rendez-vous de '||coalesce(v_spec,'consultation')||' prevu le '||v_old_local||' est reporte au '||v_new_local||'. Connectez-vous a votre espace pour le gerer.')
+      values(v_appt.id,'reprogrammed',now(),'pending','Cabinet Ya Salam: votre rendez-vous de '||coalesce(v_spec,'consultation')||' prevu le '||v_old_local||' est reporte au '||v_new_local||'. Connectez-vous a votre espace pour le gerer.')
       on conflict(appointment_id,kind) do update set scheduled_at=excluded.scheduled_at,status='pending',attempts=0,last_error=null,updated_at=now(),sent_at=null,provider_message_id=null,message_override=excluded.message_override;
   end if;
 end $$;
@@ -283,7 +283,7 @@ begin
     values(auth.uid(),'annulation par empêchement','rendez_vous',v_appt.id::text,jsonb_build_object('motif',trim(p_reason),'specialite_id',v_appt.specialite_id,'ancien_creneau',v_appt.date));
   if v_consent and v_verified then
     insert into public.appointment_sms_jobs(appointment_id,kind,scheduled_at,status,message_override)
-      values(v_appt.id,'impediment_cancelled',now(),'pending','Cabinet Sante Horizon: votre rendez-vous de '||coalesce(v_spec,'consultation')||' du '||v_old_local||' est annule. Connectez-vous a votre espace pour choisir un autre creneau ou contactez le cabinet.')
+      values(v_appt.id,'impediment_cancelled',now(),'pending','Cabinet Ya Salam: votre rendez-vous de '||coalesce(v_spec,'consultation')||' du '||v_old_local||' est annule. Connectez-vous a votre espace pour choisir un autre creneau ou contactez le cabinet.')
       on conflict(appointment_id,kind) do update set scheduled_at=excluded.scheduled_at,status='pending',attempts=0,last_error=null,updated_at=now(),sent_at=null,provider_message_id=null,message_override=excluded.message_override;
   end if;
 end $$;

@@ -19,7 +19,7 @@ const reminderText = (kind: string, date: Date, specialty: string) => {
   }).format(date);
   const lead = kind === 'confirmation' ? 'confirme' : kind === 'reprogrammed' ? 'reprogramme' : kind === '24h' ? 'rappel : demain' : 'rappel : dans 5 heures';
   const plainSpecialty = specialty.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  return `Cabinet Sante Horizon: rendez-vous ${lead} le ${when}, specialite ${plainSpecialty}. Pour annuler, connectez-vous a votre espace patient ou contactez le cabinet.`;
+  return `Cabinet Ya Salam: rendez-vous ${lead} le ${when}, specialite ${plainSpecialty}. Pour annuler, connectez-vous a votre espace patient ou contactez le cabinet.`;
 };
 
 Deno.serve(async (req) => {
@@ -94,7 +94,7 @@ Deno.serve(async (req) => {
           sender,
           to: normalizeSenegalNumber(freshProfile.telephone),
           type: 'single',
-          content: String(job.message_override || reminderText(job.kind, new Date(freshAppt.date), freshSpecialty?.nom ?? 'consultation')),
+          content: String(job.message_override || reminderText(job.kind, new Date(freshAppt.date), freshSpecialty?.nom ?? 'consultation')).replace(/Cabinet Sante Horizon/g, 'Cabinet Ya Salam').replace(/Cabinet Santé Horizon/g, 'Cabinet Ya Salam'),
         }),
       });
       const delivery = await deliveryResponse.json().catch(() => ({})) as Record<string, unknown>;

@@ -82,7 +82,7 @@ Deno.serve(async req => {
           sender: Deno.env.get('DEXNOTIFY_SMS_SENDER') ?? 'DSMS',
           to: phone,
           type: 'single',
-          content: `Cabinet Sante Horizon: votre code de verification est ${code}. Il expire dans 10 minutes.`,
+          content: `Cabinet Ya Salam: votre code de verification est ${code}. Il expire dans 10 minutes.`,
         }),
       });
       if (!sms.ok) throw new Error(`provider_http_${sms.status}`);

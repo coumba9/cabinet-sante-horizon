@@ -1,4 +1,4 @@
-# Cabinet Santé Horizon
+# Cabinet Ya Salam
 
 Application de prise de rendez-vous d’un cabinet médical unique. Le parcours s’arrête à l’arrivée du patient devant le médecin.
 

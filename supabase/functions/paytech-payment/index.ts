@@ -74,7 +74,7 @@ Deno.serve(async (req) => {
     item_price: amount,
     currency: 'XOF',
     ref_command: refCommand,
-    command_name: 'Règlement consultation Cabinet Santé Horizon',
+    command_name: 'Règlement consultation Cabinet Ya Salam',
     target_payment: method,
     env: Deno.env.get('PAYTECH_ENV') === 'prod' ? 'prod' : 'test',
     ipn_url: `${supabaseUrl()}/functions/v1/paytech-ipn`,
